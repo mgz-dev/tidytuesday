@@ -1,0 +1,293 @@
+---
+title: Tidy Tuesday Board Games
+date: 2/21/2022
+author: M. Zhang
+output: 
+  html_document:
+    df_print: tibble
+    toc: true
+
+---
+
+```{r, setup, include=FALSE}
+library(tidyverse)
+library(colorspace)
+library(ggforce)
+library(ggridges)
+knitr::opts_chunk$set(echo = TRUE, comment = "")
+```
+
+# Introduction
+
+We will be working with two datasets, `ratings` and `details`, sourced from BoardGameGeek via the Tidy Tuesday. This analysis will not be styled as a "final report", but rather as a quick walk through of some data analysis and wrangling that took place while exploring the data.
+
+The MSDSO Discord group for the University of Texas Masters in Data Science Online program will be doing weekly explorations of TidyTuesday as an exercise for improving their data science skill sets in a collaborative environment.
+
+# Data Details
+
+This dataset is pulled from the Tidy Tuesday Repository:
+
+Thomas Mock (2022). Tidy Tuesday: A weekly data project aimed at the R ecosystem. https://github.com/rfordatascience/tidytuesday.
+
+The original data is from [Kaggle](https://www.kaggle.com/jvanelteren/boardgamegeek-reviews/version/3?select=2022-01-08.csv) via [Board Game Geek](https://boardgamegeek.com/). 
+The two data sets are joinable in the `id` column, and contain board game rating information, and board game details information.
+
+## Data Loading
+
+```{r, load-data, message = FALSE}
+ratings <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2022/2022-01-25/ratings.csv')
+details <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2022/2022-01-25/details.csv')
+```
+
+
+## Data Dictionary
+
+The following tables contain information in regards to the columns available.
+
+### `ratings.csv`
+
+|variable      |class     |description |
+|:-------------|:---------|:-----------|
+|num           |double    | Game number |
+|id            |double    | Game ID |
+|name          |character | Game name |
+|year          |double    | Game year |
+|rank          |double    | Game rank |
+|average       |double    | Average rating  |
+|bayes_average |double    | Bayes average rating|
+|users_rated   |double    | Users rated |
+|url           |character | Game url |
+|thumbnail     |character | Game thumbnail  |
+
+### `details.csv`
+
+|variable                |class     |description |
+|:-----------------------|:---------|:-----------|
+|num                     |double    | Game number |
+|id                      |double    | Game ID |
+|primary                 |character | Primary name  |
+|description             |character | Description of game |
+|yearpublished           |double    | Year published |
+|minplayers              |double    | Min n of players|
+|maxplayers              |double    | Max n of players |
+|playingtime             |double    | Playing time in minutes |
+|minplaytime             |double    | Min play time |
+|maxplaytime             |double    | Max plat tome |
+|minage                  |double    | minimum age|
+|boardgamecategory       |character | Category |
+|boardgamemechanic       |character | Mechanic   |
+|boardgamefamily         |character | Board game family   |
+|boardgameexpansion      |character | Expansion |
+|boardgameimplementation |character | Implementation  |
+|boardgamedesigner       |character | Designer |
+|boardgameartist         |character | Artist  |
+|boardgamepublisher      |character | Publisher     |
+|owned                   |double    | Num owned  |
+|trading                 |double    | Num trading  |
+|wanting                 |double    | Num wanting |
+|wishing                 |double    | Num wishing |
+
+
+# Data Exploration and wrangling
+
+Based on the data dictionary and information provided on the dataset, this appears to be a good opportunity to practice using `join` functions. Additionally, we will explore which columns are good candidates for exploring summary data using the `group_by` function. In the end, we will attempt to put together a few meaningful graphics on the data summarizing user ratings and game rankings.
+
+## Examining the raw data
+
+First, we will use the `names` function to look at the information to quickly confirm the descriptions provided by the data dictionary.
+```{r, ratings}
+ratings
+names(ratings)
+ratings_count <- ratings %>% summarize(count = n())
+```
+
+
+```{r, details}
+details
+names(details)
+details_count <- details %>% summarize(count = n())
+```
+- Ratings table total entries: `r as.character(ratings_count[1])`
+- Details table total entries: `r as.character(details_count[1])`
+
+## Joining two tables
+
+Based off the first 6 entries shown in each data table, it does appear that the `id` column should allow for linkage of the two tables. There are less entries in the details dataset though, so we will left join on the `details` dataset and drop non-matching entries.
+
+```{r, joining-tables}
+board_games <- left_join(details, ratings, by = "id")
+board_games
+```
+
+We can see based off the total number of entries in the new table `board_games` that we were successful in our `left_join`
+
+## Checking for unique entries
+
+Next, we will see if each game (`primary`) has a unique entry in the data set.
+
+```{r, count-by-name}
+board_games %>%
+  group_by(primary) %>%
+  summarize(
+    n = n()) %>%
+  arrange(desc(n))
+```
+
+It can be seen that there are multiple entries per game. Based off the data set information, it may be that the same game with different publication dates maintain separate entries. We will modify the original summary to check:
+
+```{r, count-by-name-year}
+board_games %>%
+  group_by(primary, yearpublished) %>%
+  summarize(
+    n = n(), .groups = 'drop') %>%
+  arrange(desc(n))
+```
+
+We still see some duplicate entries so we will pull up a specific game to examine the data:
+
+```{r, specific-row}
+board_games %>%
+  select(primary, boardgamepublisher, average, description) %>%
+  filter(primary == "Cahoots")
+```
+
+It appears that the games have separate and therefore have separate entries. As a crude solution for the purposes of this analysis, will move forward since the number of entries in which multiples appear are small.
+
+## Grouping candidates
+
+For summarizing and visualizing the data, a few potential grouping candidates based off the `details` dataset are `primary`, `boardgamecategory`, `boardgamemechanic`, and `boardgamepublisher`. We will use `sapply` and `n_discinct`.
+
+```{r, details-distinct}
+board_games %>%
+  select(primary, boardgamecategory, boardgamemechanic, boardgamepublisher) %>%
+  sapply(n_distinct)
+```
+
+Unfortunately, we can see from the above that the number of unique entries for each row is much higher than anticipated. To understand why, we will look at the actual data contained in these columns.
+
+```{r}
+board_games %>%
+  select(
+    primary, 
+    boardgamecategory, 
+    boardgamemechanic, 
+    boardgamepublisher) %>%
+  head
+```
+
+It appears that the `boardgame` columns all actually contain more than single value entries, leading to large number of permutations of values. These columns will not be suitable for quick data analysis. Thus, we will examine some other parameters.
+
+```{r}
+board_games %>%
+  select(playingtime, minplayers, maxplayers, minage) %>%
+  sapply(n_distinct)
+```
+
+
+```{r}
+board_games %>%
+  select(
+    playingtime, 
+    minplayers, 
+    maxplayers, 
+    minage) %>%
+  head
+
+board_games %>%
+  select(
+    playingtime, 
+    minplayers, 
+    maxplayers, 
+    minage) %>%
+  summary()
+```
+
+These are all numerical values with reasonable distributions (though there appears to be some outlier values which may be removed later).
+
+## Data cleaning for NA values
+
+```{r, examine_na}
+board_games %>%
+  summarize(across(everything(), ~ sum(is.na(.)))) %>%
+  tidyr::pivot_longer(everything()) %>%
+  arrange(desc(value)) %>% 
+  deframe()
+```
+
+NA counting methodology was taken from [stackexchange](https://stackoverflow.com/questions/63198917/using-tidyverse-pipeline-to-count-nas-and-reorder)
+
+We see there are a number of NA values, but that `playingtime`, `rank`, and `average` are all populated. Thus, we will now move onto data visualizations.
+
+
+# Data Visualizations
+
+```{r, plot-1, fig.width = 10, fig.height = 4}
+board_games %>%
+  select(
+    average,
+    rank,
+    playingtime,
+    minplayers,
+    maxplayers,
+    minage) %>% 
+  ggplot() +
+  aes(x = playingtime, y = average, group = cut_width(playingtime, 30)) +
+  geom_boxplot() + 
+  scale_x_continuous(
+    name = "playing time",
+    breaks = seq(0, 600, 30),
+    labels = seq(0, 600, 30),
+    limits = c(0, 600)) + 
+  theme_classic()
+```
+
+
+```{r, plot-2, fig.width = 10, fig.height = 4}
+board_games %>%
+  select(
+    average,
+    rank,
+    playingtime,
+    minplayers,
+    maxplayers,
+    minage) %>% 
+  ggplot() +
+  aes(playingtime) +
+  geom_histogram(
+    binwidth = 30,
+    center = 5) +
+  scale_x_continuous(
+    name = "playing time",
+    breaks = seq(0, 600, 30),
+    labels = seq(0, 600, 30),
+    limits = c(0, 600)) + 
+  theme_classic()
+```
+
+The range of scores appears to diminish as the playing time for the game increases. It can also be seen that the number of games which extend to longer playtimes tapers off very quickly. There were also more rows of data being dropped than expected - this is a point for future analysis if this dataset is revisited.
+
+```{r, plot-3, fig.width = 10, fig.height = 4}
+board_games %>%
+  select(
+    average,
+    rank,
+    playingtime,
+    minplayers,
+    maxplayers,
+    minage) %>% 
+  ggplot() +
+  aes(x = rank, y = average) +
+  geom_point(size = 0.5) +
+  scale_x_continuous(
+    name = "Ranking") + 
+  theme_classic()
+```
+
+Ranking and score have relationship where the second order rate changes signs at larger numerical values for ranking.
+
+
+# Conclusion
+
+This ended up being a shorter initial exploration of the board games dataset. One finding of note was that there was a lot of game information which still needs to be parsed out of the `boardgame` columns which actually contain delimited lists of information which could allow for more interesting analysis and charts in the future.
+
+Thanks for reading and joining me on my journey to improve my skills in data analysis.
