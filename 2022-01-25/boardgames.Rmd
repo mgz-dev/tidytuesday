@@ -1,12 +1,13 @@
 ---
-title: Tidy Tuesday Board Games
-date: 2/21/2022
-author: M. Zhang
-output: 
+title: "Tidy Tuesday Board Games"
+author: "M. Zhang"
+date: "2/21/2022"
+output:
   html_document:
     df_print: tibble
-    toc: true
-
+    toc: yes
+  pdf_document:
+    toc: yes
 ---
 
 ```{r, setup, include=FALSE}
