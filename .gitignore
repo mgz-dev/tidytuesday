@@ -1,5 +1,6 @@
 # folders
 private/
+*_cache/
 
 # History files
 .Rhistory
