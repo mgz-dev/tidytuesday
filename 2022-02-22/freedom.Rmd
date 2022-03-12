@@ -50,7 +50,7 @@ Freedom House is a nonpartisan organization focused on producing research and re
 
 ## Data Loading
 
-```{r, load-data, message = FALSE}
+```{r, load-data, message = FALSE, cache = TRUE}
 #freedom <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2022/2022-02-22/freedom.csv')
 
 freedom <- tt_load("2022-02-22")$freedom %>% 
@@ -439,7 +439,7 @@ We will perform some additional analysis by pulling in other data sets.
 
 More information available at [The World Bank](https://databank.worldbank.org/home).
 
-```{r}
+```{r, wdi}
 #WDIsearch("gdp") %>% View()
 
 gdp_percap <- WDI(indicator = "NY.GDP.PCAP.CD",
@@ -456,7 +456,7 @@ gdp_percap <- WDI(indicator = "NY.GDP.PCAP.CD",
 
 ```
 
-```{r}
+```{r, wdi-join}
 freedom_join <- freedom %>% 
   inner_join(gdp_percap, 
              by = c(country_code = "iso2c", "year"), 
@@ -497,9 +497,7 @@ freedom_join_gathered %>%
 
 How do we find the biggest outliers?
 
-```{r}
-
-freedom_join_gathered 
+```{r, outliers}
 civil_liberties_2020 <- freedom_join_gathered %>%
     filter(!is.na(NY.GDP.PCAP.CD),
            metric == "Civil Liberties",
@@ -526,7 +524,7 @@ lin_mod %>%
 
 Map Visual 
 
-```{r}
+```{r, static-map}
 freedom_2020 <- freedom_join_gathered %>%
   filter(year == 2020,
          metric == "Civil Liberties")
@@ -551,7 +549,7 @@ world_map_freedom_2020 %>%
 
 Animated Map 
 
-```{r}
+```{r, animated-map, cache = TRUE}
 world_map_freedom <- map_data("world") %>%
   as_tibble() %>%
   regex_left_join(maps::iso3166, c(region = "mapname")) %>%
@@ -565,7 +563,7 @@ freedom_animate <- world_map_freedom %>%
   coord_map(xlim = c(-180, 180)) + 
   scale_fill_continuous_diverging(palette = "Blue-Red-2", mid = 3.5, name = "Freedom Index: Civil Liberties") + 
   ggtitle("World Freedom Index: Civil Liberties ({ current_frame})", subtitle = "Lower is more Free") + 
-  ggthemes::theme_map() + 
+  ggthemes::theme_map(14) + 
   transition_manual(year)
 animate(freedom_animate, height = 800, width =1000)
 anim_save("world_civil_liberties.gif")

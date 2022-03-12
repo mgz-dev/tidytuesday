@@ -8,6 +8,8 @@ output:
     toc: yes
   pdf_document:
     toc: yes
+editor_options: 
+  chunk_output_type: console
 ---
 
 ```{r, setup, include=FALSE}
@@ -35,7 +37,7 @@ The two data sets are joinable in the `id` column, and contain board game rating
 
 ## Data Loading
 
-```{r, load-data, message = FALSE}
+```{r, load-data, message = FALSE, cache = TRUE}
 ratings <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2022/2022-01-25/ratings.csv')
 details <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2022/2022-01-25/details.csv')
 ```
@@ -116,7 +118,7 @@ details_count <- details %>% summarize(count = n())
 Based off the first 6 entries shown in each data table, it does appear that the `id` column should allow for linkage of the two tables. There are less entries in the details dataset though, so we will left join on the `details` dataset and drop non-matching entries.
 
 ```{r, joining-tables}
-board_games <- left_join(details, ratings, by = "id")
+board_games <- ratings %>% left_join(details, by = "id")
 board_games
 ```
 
@@ -152,7 +154,7 @@ board_games %>%
   filter(primary == "Cahoots")
 ```
 
-It appears that the games have separate and therefore have separate entries. As a crude solution for the purposes of this analysis, will move forward since the number of entries in which multiples appear are small.
+It appears that the games have separate publishers and therefore have separate entries. As a crude solution for the purposes of this analysis, will move forward since the number of entries in which multiples appear are small.
 
 ## Grouping candidates
 
@@ -176,7 +178,7 @@ board_games %>%
   head
 ```
 
-It appears that the `boardgame` columns all actually contain more than single value entries, leading to large number of permutations of values. These columns will not be suitable for quick data analysis. Thus, we will examine some other parameters.
+It appears that the `boardgame` columns all actually contain more than single value entries, leading to large number of permutations of values. These columns will not be suitable for quick data analysis. Thus, we will examine some other parameters. (This will be examined at the end **Extra Work** section where we tokenize some of these columns).
 
 ```{r}
 board_games %>%
@@ -292,3 +294,188 @@ Ranking and score have relationship where the second order rate changes signs at
 This ended up being a shorter initial exploration of the board games dataset. One finding of note was that there was a lot of game information which still needs to be parsed out of the `boardgame` columns which actually contain delimited lists of information which could allow for more interesting analysis and charts in the future.
 
 Thanks for reading and joining me on my journey to improve my skills in data analysis.
+
+
+
+# EXTRA - Predict Rating using ML
+
+This additional analysis was done at a later date (3/10/2022) following the tutorial done by [Julia Silge](https://youtu.be/HTJ0nt3codo) on this same data set
+
+## Additional Exploration
+
+Some additional data exploration ideas for viewing information in data set.
+
+```{r, extra-1}
+ggplot(board_games, aes(average)) + 
+  geom_histogram(alpha = 0.8) + theme_minimal()
+```
+
+```{r, extra-2}
+board_games %>% 
+  filter(!is.na(minage)) %>%
+  mutate(minage = cut_number(minage, 4)) %>%
+  ggplot(aes(minage, average, fill = minage)) + 
+  geom_boxplot(alpha = 0.2, show.legend = FALSE)
+```
+
+## Tune an XGBoost Model
+
+We will be using an XGBoost model to predict average rating using boardgamecategory, and min|max columns.
+
+Training split will be done using vfold average strata method.
+
+```{r, extra-xgboost-vfolds}
+library(tidymodels)
+
+set.seed(123)
+game_split <-
+  board_games %>%
+  select(name, average, matches("min|max"), boardgamecategory) %>%
+  na.omit() %>%
+  initial_split(strata = average)
+
+game_train <- training(game_split)
+game_test <- testing(game_split)
+
+
+set.seed(234)
+game_folds <- vfold_cv(game_train, strata = average)
+game_folds
+
+```
+
+Since the `boardgamecategory` is in string format, it needs to be tokenized for feature engineering.
+
+```{r, extra-feature-engineer}
+library(textrecipes)
+
+# create a customized tokenizer
+
+split_category <- function(x) {
+  x %>% 
+    str_split(", ") %>%
+    map(str_remove_all, "[:punct:]") %>%
+    map(str_to_lower) %>%
+    map(str_squish) %>%
+    map(str_replace_all, " ", "_")
+}
+
+# Feature engineering
+
+game_rec <- 
+  recipe(average ~., data = game_train) %>%
+  update_role(name, new_role = "id") %>%
+  step_tokenize(boardgamecategory, custom_token = split_category) %>%
+  step_tokenfilter(boardgamecategory, max_tokens = 30) %>%
+  step_tf(boardgamecategory)
+
+# Not required for model training - just for pre-examination 
+game_prep <- prep(game_rec)
+bake(game_prep, new_data = NULL) %>% str()
+```
+
+We will now create a model specification for XGBoost.
+
+```{r, extra-modelspec}
+# Create a model specification
+
+xgb_spec <-
+  boost_tree(
+    trees = tune(),
+    mtry = tune(),
+    min_n = tune(),
+    learn_rate = 0.01
+  ) %>%
+  set_engine("xgboost") %>%
+  set_mode("regression")
+
+
+xgb_wf <- workflow(game_rec, xgb_spec)
+xgb_wf
+```
+
+For the unspecified parameters, we will utilize the library finetune and a 20-race grid to find the best fit model.
+
+```{r, extra-parallel-finetune}
+library(doParallel)
+registerDoParallel(cores=2)
+getDoParWorkers()
+registerDoSEQ()
+getDoParWorkers()
+
+set.seed(234)
+library(finetune)
+```
+
+Note: I was unable to get doParallel to work with XGBoost on Windows but leaving code block for future reference.
+
+```{r, extra-tune, cache = TRUE}
+xgb_game_rs <-
+  tune_race_anova(
+    xgb_wf,
+    game_folds,
+    grid = 20,
+    control = control_race(verbose_elim = TRUE, pkgs = c("stringr"))
+  )
+
+xgb_game_rs
+```
+
+
+## Evaluate Model
+
+```{r, extra-show-best-model}
+plot_race(xgb_game_rs)
+show_best(xgb_game_rs)
+
+xgb_last <- 
+  xgb_wf %>%
+  finalize_workflow(select_best(xgb_game_rs, "rmse")) %>%
+  last_fit(game_split)
+
+xgb_last
+
+xgb_last %>% collect_metrics()
+
+```
+
+Examine model variable importance by looking at only model parameters:
+
+```{r, extra-variable-importance}
+library(vip)
+
+xgb_fit <- extract_fit_parsnip(xgb_last)
+
+vip(xgb_fit, geom = "point", num_features = 12)
+```
+
+Lastly, another library allows for quick analysis of the SHAP dependence: 
+
+```{r, shap-calc}
+library(SHAPforxgboost)
+
+game_shap <- 
+  shap.prep(
+  xgb_model = extract_fit_engine(xgb_fit),
+  X_train = bake(game_prep, 
+                 has_role("predictor"), 
+                 new_data = NULL, 
+                 composition = "matrix")
+  )
+
+shap.plot.summary(game_shap)
+```
+
+```{r, shap-plot}
+shap_plot <- shap.plot.dependence(
+  game_shap,
+  x = "minage",
+  color_feature = "minplayers",
+  size0 = 2,
+  smooth = FALSE, add_hist = TRUE
+)
+
+shap_plot
+```
+
+
