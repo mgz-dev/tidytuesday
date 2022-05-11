@@ -1,0 +1,261 @@
+---
+title: "Cryptic Crosswords in R (2022-04-19)"
+date: 2022-05-06
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# TidyTuesday
+
+Join the R4DS Online Learning Community in the weekly #TidyTuesday event!
+Every week we post a raw dataset, a chart or article related to that dataset, and ask you to explore the data.
+While the dataset will be “tamed”, it will not always be tidy! As such you might need to apply various R for Data Science techniques to wrangle the data into a true tidy format.
+
+The goal of TidyTuesday is to apply your R skills, get feedback, explore other’s work, and connect with the greater #RStats community!
+As such we encourage everyone of all skills to participate!
+
+This analysis was done as a follow along with David Robinson's screencast of Tidy Tuesday (https://youtu.be/T11WKngDEGQ)
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(tidytuesdayR)
+library(tidytext)
+library(tidylo)
+library(clock)
+
+```
+
+# Load the weekly Data
+
+Download the weekly data and make available in the `tt` object.
+
+```{r Load}
+
+tuesdata <- tidytuesdayR::tt_load('2022-04-19')
+
+```
+
+
+# Readme
+
+Take a look at the readme for the weekly data to get insight on the dataset.
+This includes a data dictionary, source, and a link to an article on the data.
+
+```{r Readme, eval = interactive()}
+
+tuesdata 
+
+```
+
+
+# Glimpse Data
+
+Take an initial look at the format of the data available.
+
+```{r Glimpse}
+
+tuesdata %>% 
+  map(glimpse)
+
+```
+
+# Wrangle
+
+For this analysis we will parse the lengths (word and character) for clues, definitions, and answers.
+
+```{r Wrangle}
+
+times <- tuesdata$times
+big_dave <- tuesdata$big_dave
+
+# clean data and calculate word lengths
+crosswords <- times %>%
+  bind_rows(big_dave) %>% 
+  select(-rowid) %>%
+  extract(clue, c("clue", "answer_length"), "(.*) \\((.*)\\)$") %>%
+  mutate(year = get_year(puzzle_date),
+         month = get_month(puzzle_date),
+         month_date = date_group(puzzle_date, "month"),
+         definition_idx = str_locate(clue, fixed(definition))[, 1],
+         definition_position = case_when(
+           definition_idx == 1 ~ 0,
+           is.na(definition_idx) ~ NA_real_,
+           TRUE ~ 1),
+         definition_length = str_length(definition),
+         clue_length = str_length(clue),
+         n_words_answer = lengths(str_split(answer, " ")),
+         n_words_definition = lengths(str_split(definition, " ")),
+         n_words_clue = str_count(clue, " ") + 1
+         )
+
+crosswords %>% 
+  select(clue, n_words_clue, answer_length, n_words_answer, answer, n_words_definition, definition) %>%
+         head()
+
+```
+
+
+# Visualize
+
+Examining the overall data source distribution and looking into missing data
+
+```{r Visualize}
+# visualize number of puzzles
+crosswords %>% 
+  mutate(date = date_group(puzzle_date, "month", n = 3)) %>%
+  group_by(date) %>%
+  count(source) %>%
+  ggplot() + 
+  geom_col() + 
+  aes(x = date, y = n, fill = source) + 
+  ggtitle("number of entries by quarter")
+
+crosswords %>%
+  group_by(year, source) %>%
+  summarize(pct_missing = mean(is.na(definition_position))) %>%
+  ggplot() +
+  aes(x = year, y = pct_missing, color = source) + 
+  geom_line() + 
+  ggtitle("percent of puzzles missing definitions")
+
+```
+
+More puzzles are provided by "big_dave" and more recent data has less missing data than earlier data.
+
+
+Where do definitions typically position themselves within clues?
+
+```{r}
+crosswords %>%
+  ggplot() + 
+  aes(x = definition_position, fill = source) +
+  geom_histogram(center = 0.5, position = "dodge") + 
+  ggtitle("Definition at beginning (0) or end (1) of clue")
+
+crosswords %>%
+  summarize(definition_distribution = mean(definition_position, na.rm = TRUE))
+
+crosswords %>%
+  group_by(year, source) %>%
+  summarize(definition_distribution = mean(definition_position, na.rm = TRUE)) %>%
+  ggplot() + 
+  geom_line() +
+  aes(x = year, y = definition_distribution, color = source) + 
+  ggtitle("Average position of definition by year")
+
+crosswords %>%
+  group_by(year, source) %>%
+  filter(source == "bigdave44") %>%
+  summarize(definition_distribution = mean(definition_position, na.rm = TRUE)) %>%
+  glm(definition_distribution ~ year, data = .) %>%
+  summary()
+```
+
+Positioning of definition within clues over years is slowly trending to favor being at the end of the clue.
+
+
+```{r}
+crosswords %>%
+  ggplot() +
+  geom_histogram() +
+  aes(definition_length) + 
+  facet_wrap(vars(source), nrow = 2) +
+  ggtitle("distribution of definition character length")
+
+crosswords %>%
+  filter(!is.na(definition)) %>%
+  group_by(source) %>%
+  summarize(median_length = median(definition_length))
+```
+
+
+Is there a relationship between clue length and definition length?
+
+Is there a relationship with the number of words in the definition and the number of words in the clue?
+
+```{r}
+crosswords %>%
+  ggplot() + 
+  aes(x = clue_length, y = definition_length) + 
+  geom_density_2d_filled() + 
+  geom_density_2d() + 
+  scale_x_continuous(limits = c(0, 75)) +
+  scale_y_continuous(limits = c(0, 75)) + 
+  ggtitle("relationship between definition and clue character length")
+
+crosswords %>%
+  with(cor.test(definition_length, clue_length))
+
+crosswords %>%
+  with(cor.test(n_words_definition, n_words_clue))
+
+crosswords %>%
+  with(cor.test(n_words_answer, n_words_definition))
+
+```
+
+There is a weak correlation between clue length and definition length, for both characters and word count.
+
+
+What are the most common words used as answers in cryptic crosswords?
+
+```{r}
+answer_words <- crosswords %>%
+  filter(!is.na(answer)) %>%
+  unnest_tokens(output=word, input=answer)
+
+answer_words %>%
+  count(source, word, sort = TRUE) %>%
+  anti_join(stop_words, by = "word") %>%
+  group_by(word) %>%
+  summarize(source, n, n_total = sum(n)) %>%
+  ungroup() %>%
+  top_n(20, n_total) %>%
+  ggplot() +
+  aes(x = n, y = fct_reorder(word, n_total), fill = source) + 
+  geom_col() + 
+  ggtitle("Most Common Words in Answer")
+
+```
+
+Are the words used for answers different between sets?
+
+```{r}
+
+answer_words %>%
+  count(source, word, sort = TRUE) %>%
+  anti_join(stop_words, by = "word") %>%
+  group_by(word) %>%
+  summarize(source, n, n_total = sum(n)) %>%
+  group_by(source) %>%
+  slice_max(n = 10, order_by = n) %>%
+  ggplot() +
+  aes(x = n, y = fct_reorder(word, n), fill = source) + 
+  geom_col() + 
+  facet_wrap(vars(source), scale = "free") + 
+  ggtitle("Most common words in Answer by Source")
+
+answers_log_odds <- answer_words %>%
+  count(source, word) %>%
+  anti_join(stop_words, by = "word") %>%
+  bind_log_odds(source, word, n)
+
+answers_log_odds %>%
+  arrange(desc(abs(log_odds_weighted))) %>%
+  group_by(source) %>%
+  filter(n > 50) %>%
+  top_n(10, log_odds_weighted) %>%
+  ungroup() %>%
+  mutate(word = fct_reorder(word, log_odds_weighted)) %>%
+  ggplot() + 
+  aes(log_odds_weighted, word) +
+  geom_col() +
+  facet_wrap(vars(source), scales = "free") +
+  ggtitle("Words favored in one source which appear over 50x")
+
+```
+
