@@ -1,0 +1,230 @@
+---
+title: "Eurovision Dataset Analysis"
+date: 2022-05-17
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# TidyTuesday
+
+Join the R4DS Online Learning Community in the weekly #TidyTuesday event!
+Every week we post a raw dataset, a chart or article related to that dataset, and ask you to explore the data.
+While the dataset will be “tamed”, it will not always be tidy! As such you might need to apply various R for Data Science techniques to wrangle the data into a true tidy format.
+The goal of TidyTuesday is to apply your R skills, get feedback, explore other’s work, and connect with the greater #RStats community!
+As such we encourage everyone of all skills to participate!
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(tidytuesdayR)
+library(colorspace)
+
+```
+
+# Load the weekly Data
+
+Download the weekly data and make available in the `tt` object.
+
+```{r Load}
+
+tt <- tt_load("2022-05-17")
+
+```
+
+
+# Readme
+
+Take a look at the readme for the weekly data to get insight on the dataset.
+This includes a data dictionary, source, and a link to an article on the data.
+
+```{r Readme, eval = interactive()}
+
+tt
+
+```
+
+
+# Glimpse Data
+
+Take an initial look at the format of the data available.
+
+```{r Glimpse}
+
+tt %>% 
+  map(glimpse);
+
+```
+
+# Wrangle and Visualize
+
+
+```{r Wrangle}
+eurovision <- tt$eurovision
+votes <- tt$"eurovision-votes"
+
+```
+
+What is the trend of number of songs submitted per year?
+
+```{r}
+# colorspace::choose_color()
+colors <- c('#629F55', '#6394C9', '#CD7792')
+
+eurovision_year <- eurovision %>%
+  group_by(year, artist_country) %>%
+  mutate(song_count = n()) %>% 
+  ungroup() %>%
+  group_by(year) %>%
+  summarize(songs_count = n(),
+            country_count = n_distinct(artist_country),
+            artist_count = n_distinct(artist)) %>%
+  pivot_longer(cols = c(songs_count, country_count, artist_count), names_to = "count_type", values_to = "count") 
+
+eurovision_year
+
+eurovision_year %>%
+  ggplot() + 
+  geom_line(size = 1.5, alpha = 0.6) + 
+  aes(x = year, y = count, color = count_type) + 
+  theme_bw() + 
+  scale_x_continuous(name = "Year") + 
+  scale_y_continuous(name = "Count") + 
+  scale_color_manual(values = colors, name = NULL, labels = c("Participating artists", "Participating countries", "Songs submitted")) + 
+  ggtitle("Eurovision participation over time")
+
+eurovision %>%
+  group_by()
+
+eurovision %>%
+  group_by(artist_country) %>%
+  summarize(n = n())
+
+```
+
+How often did countries participate in Eurovision and how did they perform?
+
+```{r}
+# map the host countries
+
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(sf)
+library(ggiraph)
+
+```
+
+```{r}
+map_countries <- ne_countries(scale = "medium", continent = c("asia", "europe"), returnclass = "sf")
+
+
+hostcountry_eurovision <- eurovision %>% 
+  group_by(host_country) %>%
+  summarize(n_hosted = n_distinct(year))
+  
+artistcountry_eurovision <- 
+  eurovision %>% 
+  group_by(artist_country) %>%
+  mutate(n_year = n_distinct(year)) %>%
+  ungroup() %>%
+  group_by(artist_country, section) %>%
+  summarize(first = sum(rank == 1, na.rm = TRUE),
+            second = sum(rank == 2, na.rm = TRUE),
+            third = sum(rank == 3, na.rm = TRUE),
+            grand_champion = sum(winner),
+            n_participated = n(),
+            n_year = first(n_year)) %>%
+  ungroup() %>%
+  group_by(artist_country) %>%
+  summarize(n_participated = sum(n_participated),
+            first = sum(first),
+            second = sum(second),
+            third = sum(third),
+            grand_champion = sum(grand_champion),
+            n_year_participated = first(n_year)) %>%
+  mutate(top3 = first + second + third,
+         percent_top3 = top3/n_participated)
+
+
+eurovision_summary <- hostcountry_eurovision %>%
+  full_join(artistcountry_eurovision, by = c("host_country" = "artist_country")) %>%
+  rename(country = host_country) %>%
+  mutate(n_hosted = replace_na(n_hosted, 0))
+
+# eurovision_summary %>% View()
+
+
+map_eurovision <- eurovision_summary %>%
+  right_join(map_countries %>% select(admin, geometry), by = c("country" = "admin")) %>%
+  filter(!country %in% c("Antarctica")) %>%
+  st_as_sf(sf_column_name = c("geometry")) %>%
+  mutate(
+         tooltip = case_when(
+           !is.na(n_participated) ~ paste0(country, "\n",
+                                           "Participated: ", n_participated, "\n",
+                                           "Years: ", n_year_participated, "\n",
+                                           "Hosted: ", n_hosted, "\n",
+                                           "First: ", first, "\n",
+                                           "Second: ", third, "\n",
+                                           "Third: ", second, "\n",
+                                           "Podium % (Top 3): ", signif(percent_top3, 3)*100, "%"
+                                           ),
+           TRUE ~ paste0(country, ": Non Participant")
+           ),
+         n_participated = replace_na(n_participated, 0)
+  )
+
+```
+
+Interactive map: 
+
+```{r}
+map_eurovision_interactive <- map_eurovision %>%
+  ggplot() + 
+  geom_sf_interactive() + 
+  aes(fill = n_participated, 
+      tooltip = tooltip, 
+      data_id = tooltip) +
+  coord_sf(xlim = c(-40, 180), ylim = c(30, 90), expand = FALSE) + 
+  scale_fill_continuous_sequential(palette = "Blues", name = "Times Participated") +
+  ggtitle("Eurovision Participation",
+          subtitle = "Interactive Map")
+
+girafe(
+  ggobj = map_eurovision_interactive, 
+  width_svg = 9, height_svg = 9*0.618,
+  options = list(
+    opts_tooltip(css = "background: #F5F5F5; color: #191970")
+    ))
+```
+
+```{r}
+eurovision_summary %>%
+  mutate(country = fct_reorder(country, n_participated)) %>%
+  top_n(20, n_participated) %>%
+  ggplot() + geom_col() + 
+  aes(x = n_participated, y = country) + 
+  xlab("Times participated") +
+  ylab("Country")
+
+eurovision_summary %>%
+  mutate(country = fct_reorder(country, n_hosted)) %>%
+  top_n(20, n_hosted) %>%
+  ggplot() + geom_col() + 
+  aes(x = n_hosted, y = country) + 
+  xlab("Times Hosted") +
+  ylab("Country")
+
+eurovision_summary %>%
+  mutate(country = fct_reorder(country, percent_top3)) %>%
+  top_n(20, percent_top3) %>%
+  ggplot() + geom_col() + 
+  aes(x = percent_top3, y = country) + 
+  xlab("Percentage of participants in Top 3") +
+  ylab("Country") + 
+  scale_x_continuous(labels = scales::percent)
+
+```
+
